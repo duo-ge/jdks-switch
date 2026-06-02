@@ -2,7 +2,12 @@
 
 一个 Windows 平台的 Java 版本管理工具，实现多版本 JDK 的快速切换。
 
+## 运行方式
 
+支持两种运行模式：
+
+- **命令行模式**：在终端中输入 `jdks <命令>` 直接执行，如 `jdks init`、`jdks list`
+- **交互模式**：双击 `jdks.exe` 启动，进入交互式命令行，无需输入 `jdks` 前缀即可执行命令，输入 `exit` 退出
 
 ## jdks 使用说明
 
@@ -101,9 +106,31 @@ jdks-switch/
 ## 注意事项
 
 - 仅支持 Windows 系统
-- 需要管理员权限来创建 Junction 链接和设置环境变量
+- 无需管理员权限，所有操作均在当前用户权限范围内完成
 - 确保添加的路径是有效的 JDK 安装目录（包含 `bin\java.exe`）
 - PATH 中使用 `%JAVA_HOME%\bin` 引用，切换版本时无需重新配置 PATH
 - 建议使用有意义的版本名称，如 `jdk-8`、`jdk-11`、`jdk-17`
 - 在 CMD 或 PowerShell 中，路径使用双引号 + 反斜杠
 - 在 Nu Shell 中，路径使用单引号 + 正斜杠
+
+## 与 jenv 对比
+
+| 功能 | jdks-switch | jenv / jenv-win |
+|---|---|---|
+| 平台支持 | 仅 Windows | Linux、macOS、Windows |
+| 安装方式 | 单文件 EXE，复制即用 | 需 clone Git 仓库 + 配置 Shell Hook |
+| 依赖 | 零依赖 | 依赖 bash/shell 环境 |
+| 版本切换原理 | Windows Junction 链接 | Shell Hook + PATH 优先级 |
+| JAVA_HOME | 写注册表，全局持久化，重启终端即生效 | 需启用 export 插件，仅当前 Shell 会话 |
+| PATH 设置 | `%JAVA_HOME%\bin`，注册表持久化 | 路径前插，仅当前 Shell 会话 |
+| 全局版本 | ✅ | ✅ |
+| 目录级版本 | ❌ | ✅ `.java-version` 文件 |
+| 多终端同时不同版本 | ❌ 全局共享 | ✅ 每个 Shell 独立 |
+| 交互模式 | ✅ 双击进入交互式命令行 | ❌ |
+| 插件系统 | ❌ | ✅ maven/gradle/ant 等 |
+| 管理员权限 | 不需要 | 不需要 |
+
+**适用场景**：
+- **jdks-switch**：个人 Windows 开发机，只需全局切换，追求零配置开箱即用
+- **jenv**：多平台开发者，需要项目级版本隔离，或有 maven/gradle 插件需求
+
