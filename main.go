@@ -194,8 +194,89 @@ func ensureInit() bool {
 	return true
 }
 
+// checkExistingJava 检测系统中是否已有非 jdks-switch 管理的 Java 环境变量
+// 如果存在用户自行配置的 Java 环境变量，提示用户手动清除后再 init
+func checkExistingJava() bool {
+	var details []string
+
+	// 获取 jdks-switch 自身路径，用于排除
+	jdksExeDir := ""
+	if exePath, err := os.Executable(); err == nil {
+		jdksExeDir = strings.ToLower(filepath.Dir(exePath))
+	}
+
+	// 检查 JAVA_HOME：排除 jdks-switch 自身管理的路径
+	javaHome := os.Getenv("JAVA_HOME")
+	javaHomeLower := strings.ToLower(javaHome)
+	if javaHome != "" && !strings.Contains(javaHomeLower, ".jdks-versions") && javaHomeLower != jdksExeDir {
+		details = append(details, fmt.Sprintf("  - JAVA_HOME = %s", javaHome))
+	}
+
+	// 检查 PATH 中的 Java 相关条目：排除 jdks-switch 自身管理的路径
+	pathEnv := os.Getenv("PATH")
+	var javaPaths []string
+	for _, p := range strings.Split(pathEnv, ";") {
+		pLower := strings.ToLower(strings.TrimSpace(p))
+		// 跳过 jdks-switch 自身目录
+		if jdksExeDir != "" && pLower == jdksExeDir {
+			continue
+		}
+		// 跳过 jdks-switch 管理的路径（含 %JAVA_HOME% 或 .jdks-versions）
+		if strings.Contains(pLower, "%java_home%") || strings.Contains(pLower, ".jdks-versions") {
+			continue
+		}
+		if strings.Contains(pLower, "java") || strings.Contains(pLower, "jdk") || strings.Contains(pLower, "jre") {
+			javaPaths = append(javaPaths, p)
+		}
+	}
+	if len(javaPaths) > 0 {
+		details = append(details, "  - PATH 中的 Java 相关条目:")
+		for _, jp := range javaPaths {
+			details = append(details, fmt.Sprintf("    %s", jp))
+		}
+	}
+
+	// 没有发现非 jdks-switch 管理的 Java 环境变量，放行
+	if len(details) == 0 {
+		return false
+	}
+
+	// 尝试获取 Java 版本号作为补充信息
+	cmd := exec.Command("java", "-version")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.Contains(line, "version") {
+				details = append([]string{fmt.Sprintf("  - %s", strings.TrimSpace(line))}, details...)
+				break
+			}
+		}
+	}
+
+	printWarning("检测到系统中已有 Java 环境配置：")
+	for _, d := range details {
+		printGray(d)
+	}
+
+	fmt.Println()
+	printWarning("请先手动清除以上环境变量，后续由 jdks-switch 统一管理，避免冲突。")
+	printGray("清除方法：")
+	printGray("  系统设置 > 环境变量，删除相关 JAVA_HOME 和 PATH 条目")
+	if javaHome != "" && !strings.Contains(strings.ToLower(javaHome), ".jdks-versions") {
+		printGray("  或执行: setx JAVA_HOME \"\"")
+	}
+	fmt.Println()
+
+	return true
+}
+
 // cmdInit 初始化 jdks 环境
 func cmdInit() {
+	// 前置校验：检测是否已有 Java 环境配置
+	if checkExistingJava() {
+		printError("请清除现有 Java 环境变量后重新运行 \"jdks init\"")
+		return
+	}
+
 	// 创建版本目录
 	if err := os.MkdirAll(JavaVersionsDir, 0755); err != nil {
 		printError(fmt.Sprintf("无法创建目录: %s", err))
