@@ -478,6 +478,151 @@ func cmdUse(version string) {
 	}
 }
 
+// extractJavaVersion 执行 java -version 并提取版本号
+// 返回主版本号，例如 8、11、17、21
+func extractJavaVersion(javaExe string) (string, string, error) {
+	cmd := exec.Command(javaExe, "-version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("无法执行 java -version: %w", err)
+	}
+
+	fullVersion := ""
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		// 匹配 java version "1.8.0_351" 或 openjdk version "17.0.1" 等格式
+		if strings.Contains(line, "version") {
+			// 提取引号内的版本号
+			start := strings.Index(line, "\"")
+			end := strings.LastIndex(line, "\"")
+			if start >= 0 && end > start {
+				fullVersion = line[start+1:end]
+				break
+			}
+			}
+	}
+	if fullVersion == "" {
+		return "", "", fmt.Errorf("无法从输出中解析版本号")
+	}
+
+	// 提取主版本号
+	// "1.8.0_351" → 8
+	// "11.0.15" → 11
+	// "17.0.1" → 17
+	// "21" → 21
+	majorVersion := ""
+	if strings.HasPrefix(fullVersion, "1.") {
+		// Java 8 及更早版本格式: 1.X.y_z
+		parts := strings.Split(fullVersion, ".")
+		if len(parts) >= 2 {
+			majorVersion = parts[1]
+		}
+	} else {
+		// Java 9+ 格式: X.y.z
+		parts := strings.Split(fullVersion, ".")
+		majorVersion = parts[0]
+	}
+
+	return majorVersion, fullVersion, nil
+}
+
+// cmdScan 扫描指定路径下的子目录，自动检测并注册 JDK
+func cmdScan(scanPath string) {
+	if !ensureInit() {
+		return
+	}
+
+	absPath, err := filepath.Abs(scanPath)
+	if err != nil {
+		printError(fmt.Sprintf("无法解析路径: %s", scanPath))
+		return
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			printError(fmt.Sprintf("路径不存在: %s", absPath))
+		} else {
+			printError(fmt.Sprintf("无法访问路径: %s (%v)", absPath, err))
+		}
+		return
+	}
+	if !info.IsDir() {
+		printError(fmt.Sprintf("路径不是目录: %s", absPath))
+		return
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		printError(fmt.Sprintf("无法读取目录: %s (%v)", absPath, err))
+		return
+	}
+
+	printCyan(fmt.Sprintf("扫描目录: %s", absPath))
+	fmt.Println()
+
+	registered := 0
+	skipped := 0
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		subDir := filepath.Join(absPath, entry.Name())
+		javaExe := filepath.Join(subDir, "bin", "java.exe")
+
+		// 检查是否是 JDK 目录（必须有 bin/java.exe）
+		if _, err := os.Stat(javaExe); err != nil {
+			continue
+		}
+
+		// 提取版本号
+		majorVersion, fullVersion, err := extractJavaVersion(javaExe)
+		if err != nil {
+			printWarning(fmt.Sprintf("  %s - 检测到 JDK 但无法提取版本号: %v", entry.Name(), err))
+			skipped++
+			continue
+		}
+
+		versionName := "jdk-" + majorVersion
+		targetPath := filepath.Join(JavaVersionsDir, versionName)
+
+		// 检查是否已注册
+		if _, err := os.Lstat(targetPath); err == nil {
+			printGray(fmt.Sprintf("  %s (版本 %s) - 已注册为 '%s'，跳过", entry.Name(), fullVersion, versionName))
+			skipped++
+			continue
+		}
+
+		// 注册 JDK
+		resolvedPath, err := validateJavaPath(subDir)
+		if err != nil {
+			printWarning(fmt.Sprintf("  %s - 路径验证失败: %v", entry.Name(), err))
+			skipped++
+			continue
+		}
+
+		if err := CreateJunction(targetPath, resolvedPath); err != nil {
+			printWarning(fmt.Sprintf("  %s (版本 %s) - 注册失败: %v", entry.Name(), fullVersion, err))
+			skipped++
+			continue
+		}
+
+		printSuccess(fmt.Sprintf("  %s (版本 %s) -> 已注册为 '%s'", entry.Name(), fullVersion, versionName))
+		registered++
+	}
+
+	fmt.Println()
+	if registered > 0 {
+		printSuccess(fmt.Sprintf("扫描完成: 新注册 %d 个 JDK，跳过 %d 个", registered, skipped))
+	} else if skipped > 0 {
+		printWarning(fmt.Sprintf("扫描完成: 未发现新的可注册 JDK (跳过 %d 个)", skipped))
+	} else {
+		printWarning("扫描完成: 未发现 JDK 目录")
+	}
+}
+
 // cmdRemove 移除 Java 版本
 func cmdRemove(version string) {
 	if !ensureInit() {
@@ -563,6 +708,7 @@ func showWelcome() {
 	fmt.Println("  jdks init               初始化环境")
 	fmt.Println("  jdks list               查看已注册版本")
 	fmt.Println("  jdks add <名称> <路径>  注册 JDK 版本")
+	fmt.Println("  jdks scan <路径>        扫描并自动注册 JDK")
 	fmt.Println("  jdks use <名称>         切换版本")
 	fmt.Println("  jdks remove <名称>      移除版本")
 	fmt.Println("  jdks -v                 查看版本号")
@@ -615,6 +761,12 @@ func startInteractive() {
 			} else {
 				cmdUse(parts[1])
 			}
+		case "scan":
+			if len(parts) < 2 {
+				printError("用法: scan <路径>")
+			} else {
+				cmdScan(parts[1])
+			}
 		case "remove", "rm":
 			if len(parts) < 2 {
 				printError("用法: remove <版本名>")
@@ -641,11 +793,13 @@ func showHelp() {
 	fmt.Printf("  init              初始化 Java 版本切换工具并配置环境\n")
 	fmt.Printf("  list              列出所有可用的 Java 版本\n")
 	fmt.Printf("  add <版本> <路径>  添加新的 Java 版本\n")
+	fmt.Printf("  scan <路径>        扫描路径下的子目录并自动注册 JDK\n")
 	fmt.Printf("  use <版本>         切换到指定的 Java 版本\n")
 	fmt.Printf("  remove <版本>      移除 Java 版本\n\n")
 	printGray("示例:")
 	fmt.Printf("  jdks init\n")
 	fmt.Printf("  jdks add jdk17 \"C:\\Program Files\\Java\\jdk-17\"\n")
+	fmt.Printf("  jdks scan \"C:\\Program Files\\Java\"\n")
 	fmt.Printf("  jdks use jdk17\n")
 	fmt.Printf("  jdks list\n")
 	fmt.Printf("  jdks remove jdk17\n")
@@ -725,6 +879,13 @@ func main() {
 			os.Exit(1)
 		}
 		cmdUse(os.Args[2])
+	case "scan":
+		if len(os.Args) < 3 {
+			printError("用法: jdks scan <路径>")
+			pauseIfOwnsConsole()
+			os.Exit(1)
+		}
+		cmdScan(os.Args[2])
 	case "remove":
 		if len(os.Args) < 3 {
 			printError("用法: jdks remove <版本>")

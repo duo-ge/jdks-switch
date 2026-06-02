@@ -1,2 +1,5 @@
 *.exe
 *.zip
+.claude
+.codex
+.qoder

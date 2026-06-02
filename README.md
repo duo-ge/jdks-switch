@@ -17,6 +17,7 @@
 |---|---|
 | `jdks init` | 初始化（创建目录、设置 JAVA_HOME） |
 | `jdks add <名称> <路径>` | 注册 JDK 版本 |
+| `jdks scan <路径>` | 扫描路径下的子目录并自动注册 JDK |
 | `jdks list` | 查看已注册版本 |
 | `jdks use <名称>` | 切换版本 |
 | `jdks remove <名称>` | 移除版本 |
@@ -29,6 +30,9 @@ jdks init
 jdks add jdk-8  "C:\Users\admin\.jdks\azul-1.8.0_492"
 jdks add jdk-11 "C:\Users\admin\.jdks\azul-11.0.29"
 jdks add jdk-17 "C:\Users\admin\.jdks\azul-17.0.19"
+# 或者使用 scan 命令批量扫描并自动注册
+jdks scan "C:\Users\admin\.jdks"
+
 jdks use jdk-17
 jdks list
 jdks remove jdk-8
@@ -39,6 +43,8 @@ jdks remove jdk-8
 - 首次 `init` 后需重启终端
 - 路径用双引号包裹
 - `remove` 只删链接，不删实际 JDK
+- `scan` 会自动检测子目录中的 JDK（需包含 `bin\java.exe`），并通过 `java -version` 提取版本号，按 `jdk-<主版本号>` 命名（如 `jdk-8`、`jdk-17`）
+- `scan` 对已注册的版本名会自动跳过，不会重复注册
 
 
 
@@ -94,7 +100,7 @@ jdks-v1.0.0.zip
 
 ```
 jdks-switch/
-├── main.go       # 主入口 + 5 个子命令 + 彩色输出 + 版本号
+├── main.go       # 主入口 + 6 个子命令（init/list/add/scan/use/remove）+ 彩色输出 + 版本号
 ├── junction.go   # Windows Junction 操作（mklink /J + DeviceIoControl 读取）
 ├── env.go        # 注册表环境变量持久化（syscall）
 ├── go.mod
