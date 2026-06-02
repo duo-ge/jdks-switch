@@ -64,8 +64,11 @@ func CreateJunction(link, target string) error {
 	}
 
 	// 确保目标目录存在
-	if _, err := os.Stat(absTarget); os.IsNotExist(err) {
-		return fmt.Errorf("目标路径不存在: %s", absTarget)
+	if _, err := os.Stat(absTarget); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("目标路径不存在: %s", absTarget)
+		}
+		return fmt.Errorf("无法访问目标路径: %s (%w)", absTarget, err)
 	}
 
 	// 如果链接路径已存在，先删除

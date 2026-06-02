@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 // 目录常量
@@ -102,6 +103,23 @@ func printGray(msg string) {
 	fmt.Printf("%s%s%s\n", color(ansiGray), msg, reset())
 }
 
+// validateVersionName 校验版本名合法性
+func validateVersionName(name string) error {
+	if name == "" {
+		return fmt.Errorf("版本名不能为空")
+	}
+	if name == "current" {
+		return fmt.Errorf("版本名不能使用保留名 'current'")
+	}
+	if strings.ContainsAny(name, `\\/:*?"<>|`) {
+		return fmt.Errorf("版本名包含非法字符: %s", name)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("版本名不能为 '.' 或 '..'")
+	}
+	return nil
+}
+
 // 验证 Java 安装路径
 func validateJavaPath(javaPath string) (string, error) {
 	absPath, err := filepath.Abs(javaPath)
@@ -110,19 +128,70 @@ func validateJavaPath(javaPath string) (string, error) {
 	}
 
 	info, err := os.Stat(absPath)
-	if os.IsNotExist(err) {
-		return "", fmt.Errorf("路径不存在: %s", absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("路径不存在: %s", absPath)
+		}
+		return "", fmt.Errorf("无法访问路径: %s (%w)", absPath, err)
 	}
 	if !info.IsDir() {
 		return "", fmt.Errorf("路径不是目录: %s", absPath)
 	}
 
 	javaExe := filepath.Join(absPath, "bin", "java.exe")
-	if _, err := os.Stat(javaExe); os.IsNotExist(err) {
-		return "", fmt.Errorf("找不到 Java 可执行文件: %s", javaExe)
+	if _, err := os.Stat(javaExe); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("找不到 Java 可执行文件: %s", javaExe)
+		}
+		return "", fmt.Errorf("无法访问 Java 可执行文件: %s (%w)", javaExe, err)
 	}
 
 	return absPath, nil
+}
+
+// addSelfToPath 将 jdks.exe 所在目录添加到用户 PATH
+func addSelfToPath() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("无法获取程序路径: %w", err)
+	}
+	exeDir := filepath.Dir(exePath)
+	absDir, err := filepath.Abs(exeDir)
+	if err != nil {
+		return fmt.Errorf("无法解析程序目录: %w", err)
+	}
+
+	// 读取当前用户 PATH
+	userPath, err := GetUserEnv("PATH")
+	if err != nil {
+		userPath = ""
+	}
+
+	// 检查是否已在 PATH 中
+	absDirLower := strings.ToLower(absDir)
+	for _, p := range strings.Split(userPath, ";") {
+		if strings.ToLower(strings.TrimSpace(p)) == absDirLower {
+			return nil // 已存在
+		}
+	}
+
+	// 添加到 PATH 开头
+	newPath := absDir + ";" + userPath
+	if err := SetUserEnv("PATH", newPath); err != nil {
+		return fmt.Errorf("无法写入 PATH: %w", err)
+	}
+
+	printSuccess(fmt.Sprintf("已将 %s 添加到 PATH", absDir))
+	return nil
+}
+
+// ensureInit 检查是否已初始化，未初始化则提示并返回 false
+func ensureInit() bool {
+	if _, err := os.Stat(JavaVersionsDir); err != nil {
+		printWarning("尚未初始化，请先运行 \"jdks init\"")
+		return false
+	}
+	return true
 }
 
 // cmdInit 初始化 jdks 环境
@@ -136,7 +205,7 @@ func cmdInit() {
 
 	// 创建 current junction（如果不存在）
 	currentLink := filepath.Join(JavaVersionsDir, "current")
-	if _, err := os.Lstat(currentLink); os.IsNotExist(err) {
+	if _, err := os.Lstat(currentLink); err != nil && os.IsNotExist(err) {
 		if err := CreateJunction(currentLink, JavaVersionsDir); err != nil {
 			printError(fmt.Sprintf("无法创建 junction: %s", err))
 			return
@@ -161,14 +230,26 @@ func cmdInit() {
 		return
 	}
 
+	// 询问用户是否将 jdks.exe 所在目录添加到 PATH
+	fmt.Printf("\n是否将 jdks 添加到系统 PATH？(Y/n): ")
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+	if input == "" || input == "y" || input == "yes" {
+		if err := addSelfToPath(); err != nil {
+			printWarning(fmt.Sprintf("无法将 jdks 添加到 PATH: %s", err))
+		}
+	} else {
+		printGray("已跳过添加到 PATH，后续可手动添加或重新运行 jdks init")
+	}
+
 	printSuccess("Java 版本切换工具初始化成功！")
 	printWarning("请重启终端以使环境变量更改完全生效。")
 }
 
 // cmdList 列出所有已注册的 Java 版本
 func cmdList() {
-	if _, err := os.Stat(JavaVersionsDir); os.IsNotExist(err) {
-		printWarning("未找到 Java 版本目录，请先运行 \"jdks init\"。")
+	if !ensureInit() {
 		return
 	}
 
@@ -234,6 +315,15 @@ func cmdList() {
 
 // cmdAdd 添加新的 Java 版本
 func cmdAdd(version, javaPath string) {
+	if !ensureInit() {
+		return
+	}
+
+	if err := validateVersionName(version); err != nil {
+		printError(err.Error())
+		return
+	}
+
 	targetPath := filepath.Join(JavaVersionsDir, version)
 
 	if _, err := os.Lstat(targetPath); err == nil {
@@ -259,10 +349,18 @@ func cmdAdd(version, javaPath string) {
 
 // cmdUse 切换到指定 Java 版本
 func cmdUse(version string) {
+	if !ensureInit() {
+		return
+	}
+
 	targetPath := filepath.Join(JavaVersionsDir, version)
 
-	if _, err := os.Lstat(targetPath); os.IsNotExist(err) {
-		printError(fmt.Sprintf("未找到版本 '%s'", version))
+	if _, err := os.Lstat(targetPath); err != nil {
+		if os.IsNotExist(err) {
+			printError(fmt.Sprintf("未找到版本 '%s'", version))
+		} else {
+			printError(fmt.Sprintf("无法访问版本 '%s': %s", version, err))
+		}
 		return
 	}
 
@@ -301,10 +399,18 @@ func cmdUse(version string) {
 
 // cmdRemove 移除 Java 版本
 func cmdRemove(version string) {
+	if !ensureInit() {
+		return
+	}
+
 	targetPath := filepath.Join(JavaVersionsDir, version)
 
-	if _, err := os.Lstat(targetPath); os.IsNotExist(err) {
-		printError(fmt.Sprintf("未找到版本 '%s'", version))
+	if _, err := os.Lstat(targetPath); err != nil {
+		if os.IsNotExist(err) {
+			printError(fmt.Sprintf("未找到版本 '%s'", version))
+		} else {
+			printError(fmt.Sprintf("无法访问版本 '%s': %s", version, err))
+		}
 		return
 	}
 
@@ -340,6 +446,34 @@ func cmdRemove(version string) {
 	printSuccess(fmt.Sprintf("已移除 Java 版本 '%s'", version))
 }
 
+// parseArgs 解析命令行参数，支持双引号包裹的带空格路径
+// add jdk-8 "D:\Program Files\Java\jdk8" → ["add", "jdk-8", "D:\Program Files\Java\jdk8"]
+func parseArgs(input string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuote := false
+
+	for i := 0; i < len(input); i++ {
+		ch := input[i]
+		if ch == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && (ch == ' ' || ch == '\t') {
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteByte(ch)
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
+}
+
 // showWelcome 双击运行时显示欢迎信息
 func showWelcome() {
 	printCyan(fmt.Sprintf("jdks v%s - Java 版本切换工具", version))
@@ -368,8 +502,8 @@ func startInteractive() {
 			continue
 		}
 
-		// 解析输入的命令和参数
-		parts := strings.Fields(input)
+		// 解析输入的命令和参数（支持引号包裹的带空格路径）
+		parts := parseArgs(input)
 
 		// 支持 jdks 前缀："jdks init" 等同于 "init"
 		if len(parts) > 0 && (parts[0] == "jdks" || parts[0] == "jdks.exe") {
@@ -436,12 +570,51 @@ func showHelp() {
 	fmt.Printf("  jdks remove jdk17\n")
 }
 
+// ownsConsole 检测当前程序是否拥有自己的控制台窗口
+// 当从资源管理器双击、Win+R 等方式启动时，程序会创建自己的控制台
+// 这种情况下程序退出后窗口会立即关闭（闪退）
+func ownsConsole() bool {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
+	hwnd, _, _ := getConsoleWindow.Call()
+	if hwnd == 0 {
+		return false // 无控制台
+	}
+
+	// 获取控制台窗口所属进程 ID
+	var consolePid uint32
+	user32 := syscall.NewLazyDLL("user32.dll")
+	getWindowThreadProcessId := user32.NewProc("GetWindowThreadProcessId")
+	getWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&consolePid)))
+
+	// 如果控制台窗口属于当前进程，说明是我们自己创建的控制台
+	return consolePid == uint32(os.Getpid())
+}
+
+// pauseIfOwnsConsole 如果程序拥有自己的控制台窗口，等待用户按键后退出
+// 防止从非终端环境启动时窗口闪退
+func pauseIfOwnsConsole() {
+	if ownsConsole() {
+		fmt.Println("\n按回车键退出...")
+		bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+}
+
 func main() {
 	// 仅支持 Windows
 	if runtime.GOOS != "windows" {
-		printError("jdks 仅支持 Windows 系统")
+		fmt.Println("jdks 仅支持 Windows 系统")
 		os.Exit(1)
 	}
+
+	// 捕获 panic，防止闪退看不到错误
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "程序异常: %v\n", r)
+			pauseIfOwnsConsole()
+			os.Exit(1)
+		}
+	}()
 
 	if len(os.Args) < 2 {
 		// 双击运行：显示欢迎信息，启动交互模式保持窗口打开
@@ -460,18 +633,21 @@ func main() {
 	case "add":
 		if len(os.Args) < 4 {
 			printError("用法: jdks add <版本> <路径>")
+			pauseIfOwnsConsole()
 			os.Exit(1)
 		}
 		cmdAdd(os.Args[2], os.Args[3])
 	case "use":
 		if len(os.Args) < 3 {
 			printError("用法: jdks use <版本>")
+			pauseIfOwnsConsole()
 			os.Exit(1)
 		}
 		cmdUse(os.Args[2])
 	case "remove":
 		if len(os.Args) < 3 {
 			printError("用法: jdks remove <版本>")
+			pauseIfOwnsConsole()
 			os.Exit(1)
 		}
 		cmdRemove(os.Args[2])
@@ -482,6 +658,9 @@ func main() {
 	default:
 		printError(fmt.Sprintf("未知命令: %s", command))
 		showHelp()
+		pauseIfOwnsConsole()
 		os.Exit(1)
 	}
+
+	pauseIfOwnsConsole()
 }
