@@ -374,22 +374,25 @@ func cmdList() {
 	printCyan("已注册的 Java 版本：")
 	for _, ver := range versions {
 		verPath := filepath.Join(JavaVersionsDir, ver)
-		var verTarget string
+		absVerPath, _ := filepath.Abs(verPath)
+		absVerPath = strings.TrimRight(absVerPath, `\ /`)
+	
+		// current junction 指向版本目录路径，直接与版本目录路径比较
+		isCurrent := currentTarget != "" &&
+			strings.EqualFold(currentTarget, absVerPath)
+	
+		// 读取版本实际指向的 JDK 路径
+		var jdkPath string
 		if target, err := ReadJunctionTarget(verPath); err == nil {
-			verTarget = strings.TrimRight(target, `\/`)
+			jdkPath = strings.TrimRight(target, `\ /`)
 		} else {
-			// 非 junction，直接用路径
-			absPath, _ := filepath.Abs(verPath)
-			verTarget = strings.TrimRight(absPath, `\/`)
+			jdkPath = absVerPath
 		}
-
-		isCurrent := currentTarget != "" && verTarget != "" &&
-			strings.EqualFold(currentTarget, verTarget)
-
+	
 		if isCurrent {
-			fmt.Printf("%s  -> %s%s\n", color(ansiGreen), ver, reset())
+			fmt.Printf("%s  * %s%s -> %s\n", color(ansiGreen), ver, reset(), jdkPath)
 		} else {
-			fmt.Printf("     %s\n", ver)
+			fmt.Printf("    %s -> %s\n", ver, jdkPath)
 		}
 	}
 }
